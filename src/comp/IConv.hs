@@ -437,9 +437,19 @@ iConvE errh flags r env pvs (CConT ti c es) =
         let (t, (m, n)) = lookupConType flags ti c r
         in  iAps (ICon c (ICCon t m n)) [] (map (iConvE errh flags r env pvs) es)
 -- Ccase
-iConvE errh flags r env pvs (CStructT ct []) = ICon ti $ ICTuple it []
-  where it = iConvT flags r ct
-        (ti, _) = splitITApCon it
+iConvE errh flags r env pvs (CStructT ct []) = con
+  where con = iAPs ict ts
+        ict = ICon ti (ICTuple tupty [])
+        tupty = foldr (\ (v, k) t -> ITForAll v k t) it (zip vs ks)
+        it = iConvT flags r ct
+        (ti, ts) = splitITApCon it
+        tiInfo = case findType r ti of
+          Just tii -> tii
+          Nothing -> internalError $ "iConvE: didn't find typeinfo for " ++ show ti
+        n = length ts
+        vs = take n tmpTyVarIds
+        ks = map (\ (Kfun k _) -> iConvK k) $ iterate (\ (Kfun _ k) -> k) $ ti_kind tiInfo
+
 iConvE errh flags r env pvs eee@(CStructT ct fs@((f,_):_)) =
  --trace (ppReadable (eee, map fst fs)) $
  --trace (ppReadable (map (\ (f,_) -> lookupSelType flags ti f r) fs)) $
