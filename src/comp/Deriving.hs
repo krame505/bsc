@@ -18,7 +18,7 @@ import PreIds(
               -- internal class members
               idPrimMakeUninitialized, idPrimUninitialized,
               idMakeUndef, idBuildUndef,
-              idPrimDeepSeqCond,
+              idPrimDeepSeqCond, idPrimSeqCond,
               -- type constructors
               idBit, idAdd, idMax,
               idConc, idConcPrim, idConcPoly, idMeta,
