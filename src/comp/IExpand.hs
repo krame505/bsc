@@ -4372,6 +4372,16 @@ improveIf f t cnd (IAps (ICon i1 c1@(ICTuple {})) ts1 es1)
   -- unambiguous improvement since the ICTuple has propagated out
   return ((IAps (ICon i1 c1) ts1 es'), True)
 
+-- push if improvement inside bit concatenations with matching boundaries
+-- this is a post-pack version of the struct/tuple case above
+improveIf f t cnd thn@(IAps concat@(ICon _ (ICPrim _ PrimConcat)) ts1@[ITNum sx, ITNum sy, _] [thn_x, thn_y])
+                  els@(IAps        (ICon _ (ICPrim _ PrimConcat)) ts2                         [els_x, els_y])
+  | ts1 == ts2 = do
+  when doTraceIf $ traceM ("improveIf PrimConcat triggered " ++ ppReadable (cnd,thn,els))
+  (x', _) <- improveIf f (itBitN sx) cnd thn_x els_x
+  (y', _) <- improveIf f (itBitN sy) cnd thn_y els_y
+  return (IAps concat ts1 [x', y'], True)
+
 improveIf f t cnd thn@(IAps chr@(ICon _ (ICPrim _ PrimChr)) ts1 [chr_thn])
                   els@(IAps     (ICon _ (ICPrim _ PrimChr)) ts2 [chr_els]) = do
   when doTraceIf $ traceM ("improveIf PrimChr triggered " ++ show (cnd,thn,els))
@@ -4422,9 +4432,16 @@ improveIf f t cnd thn@(IAps ssp@(ICon _ (ICPrim _ PrimSetSelPosition)) ts1 [pos_
 -- mildly duplicates some work in doIf (isUndet thn)
 -- but the overlapping work for els has been moved here
 improveIf f t cnd thn els | ICon _ (ICUndet { iuKind = u }) <- thn,
-                            u == UNotUsed || isSimpleType t = return (els, True)
+                            improveIfUndet u t = do
+  let info = show thn ++ "\n" ++ ppReadable (cnd, thn, els)
+  when doTraceIf $ traceM ("improveIf Undet (then) triggered " ++ info)
+  return (els, True)
 improveIf f t cnd thn els | ICon _ (ICUndet { iuKind = u }) <- els,
-                            u == UNotUsed || isSimpleType t = return (thn, True)
+                            improveIfUndet u t = do
+  let info = show els ++ "\n" ++ ppReadable (cnd, thn, els)
+  when doTraceIf $ traceM ("improveIf Undet (els) triggered " ++ info)
+  return (thn, True)
+
 improveIf f t cnd thn els = do
   when doTrans $ traceM ("improveIf: iTransform fallthrough: " ++ ppReadable (cnd, thn, els))
   errh <- getErrHandle
@@ -4436,6 +4453,14 @@ improveIf f t cnd thn els = do
                 -- XXX the above is just a convoluted way of writing this?
                 -- (IAps f [t] [cnd, thn, els], False)
 
+improveIfUndet :: UndefKind -> IType -> Bool
+-- Always drop types that can survive downstream, but can't have don't cares
+-- (Integer, String, Real, etc)
+improveIfUndet _         t | isSimpleType t = True
+-- Never remove a user-inserted don't care
+improveIfUndet UDontCare _ = False
+-- Removing undefined bits gets in the way of pack . unpack optimization
+improveIfUndet _         t = not $ isBitType t
 
 -- simplify evaluated dyn-sel expressions, not just to reduce the order of
 -- growth of elaboration, but also to avoid triggering elaboration errors
