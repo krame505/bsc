@@ -13,11 +13,6 @@ import PreIds(
               idId, idPrimPair, idArrow, idFmt,
               -- internal type fields
               idPrimFst, idPrimSnd,
-              -- internal classes
-              idClsUninitialized, idUndefined,
-              -- internal class members
-              idPrimMakeUninitialized, idPrimUninitialized,
-              idMakeUndef, idBuildUndef,
               -- type constructors
               idBit, idAdd, idMax,
               idConc, idConcPrim, idConcPoly, idMeta,
