@@ -4792,7 +4792,7 @@ evalCExpr tag ce ct as = do
       let ie = iConvExpr errh flags r env ce'
       --traceM(err_tag ++ "; ce': " ++ ppReadable ce')
       --traceM(err_tag ++ "; ie: " ++ ppReadable ie)
-      evalAp err_tag ie as
+      evalAp tag ie as
 
 doBuildUndefined :: IType -> Position -> Integer -> [Arg] -> G PExpr
 doBuildUndefined t pos i as = do
