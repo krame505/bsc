@@ -4790,8 +4790,8 @@ evalCExpr tag ce ct as = do
       errh <- getErrHandle
       flags <- getFlags
       let ie = iConvExpr errh flags r env ce'
-      --traceM("evalCExpr " ++ tag ++ "; ce': " ++ ppReadable ce')
-      --traceM("evalCExpr " ++ tag ++ "; ie: " ++ ppReadable ie)
+      --traceM(err_tag ++ "; ce': " ++ ppReadable ce')
+      --traceM(err_tag ++ "; ie: " ++ ppReadable ie)
       evalAp err_tag ie as
 
 doBuildUndefined :: IType -> Position -> Integer -> [Arg] -> G PExpr
