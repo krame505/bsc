@@ -1,6 +1,6 @@
 module Deriving(derive) where
 
-import Data.List(intercalate)
+import Data.List(intercalate, nub)
 import Util(log2, checkEither, headOrErr, lastOrErr, unconsOrErr, fromJustOrErr)
 import Error(internalError, EMsg, ErrMsg(..), ErrorHandle, bsError)
 import Flags(Flags)
@@ -317,7 +317,7 @@ doSBits :: Position -> Id -> [Type] -> CFields -> CDefn
 doSBits dpos ti vs fields = Cinstance (CQType ctx (cTApplys (cTCon idBits) [aty, sz])) [pk, un]
   where tiPos = getPosition ti
         ctx = bCtx ++ aCtx ++ cCtx
-        cCtx = concatMap (\ (CField { cf_type = CQType q _}) -> q) fields
+        cCtx = nub $ concatMap (\ (CField { cf_type = CQType q _}) -> q) fields
         bCtx = zipWith (\ (CField { cf_type = cqt@(CQType _ t) }) sv ->
                         CPred (CTypeclass idBits)
                                   [t, cTVarKind
@@ -754,8 +754,7 @@ mkGenericInstance r packageid dpos i vs isData summands =
         fieldHigherRank :: CQType -> Bool
         fieldHigherRank (CQType ps ty) = not $ S.fromList (tv ty) `S.isSubsetOf` expandFunDeps r ps tvset
 
-        preds = concat [ps | (_, _, ftys) <- summands, fty@(CQType ps _) <- ftys,
-                        not $ fieldHigherRank fty]
+        preds = nub [p | (_, _, ftys) <- summands, fty@(CQType ps _) <- ftys, not $ fieldHigherRank fty, p <- ps]
 
         fieldNames (Just fns) dpos = fns
         fieldNames Nothing dpos = [mk_dangling_id ("_" ++ show (k :: Int)) dpos
