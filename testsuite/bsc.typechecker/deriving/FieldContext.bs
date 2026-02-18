@@ -1,0 +1,19 @@
+package FieldContext where
+
+class coherent Literals a b c d | a -> b c d where {}
+
+data Foo = Foo
+data Bar = Bar
+
+struct SMaybe a =
+  isValid :: Bool
+  value :: a
+
+instance Literals Foo Bool    UInt Maybe  where {}
+instance Literals Bar (Bit 8) Int  SMaybe where {}
+
+struct Thing a = 
+  x :: (Literals a b c d) => b
+  y :: (Literals a b c d) => c 16
+  z :: (Literals a b c d) => Either (d b) (Bit 7)
+ deriving (Eq, Bits, DefaultValue)

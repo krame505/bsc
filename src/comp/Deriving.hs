@@ -726,6 +726,14 @@ doSGeneric :: SymTab -> Id -> Position -> Id -> [Type] -> CFields -> Either EMsg
 doSGeneric r packageid dpos i vs fs = mkGenericInstance r packageid dpos i vs False
   [(i, Just [fn | CField {cf_name=fn} <- fs], [fty | CField {cf_type=fty} <- fs])]
 
+expandFunDeps :: SymTab -> [CPred] -> S.Set TyVar -> S.Set TyVar
+expandFunDeps r ps detTvs =
+  let newTvs = S.fromList
+        [v | CPred tc ts <- ps, fd <- funDeps $ mustFindClass r tc,
+            S.fromList (tv [t | (False, t) <- zip fd ts]) `S.isSubsetOf` detTvs,
+            v <- tv [t | (True, t) <- zip fd ts]]
+  in  if newTvs `S.isSubsetOf` detTvs then detTvs else expandFunDeps r ps $ detTvs `S.union` newTvs
+
 -- Build an instance of Generic for a struct / data declaration,
 -- along with any needed poly field wrapper structs and instances
 -- Arguments:
@@ -744,7 +752,7 @@ mkGenericInstance r packageid dpos i vs isData summands =
         tvset = S.fromList (tv ty)
 
         fieldHigherRank :: CQType -> Bool
-        fieldHigherRank fty = not $ S.fromList (tv fty) `S.isSubsetOf` tvset
+        fieldHigherRank (CQType ps ty) = not $ S.fromList (tv ty) `S.isSubsetOf` expandFunDeps r ps tvset
 
         preds = concat [ps | (_, _, ftys) <- summands, fty@(CQType ps _) <- ftys,
                         not $ fieldHigherRank fty]
