@@ -121,9 +121,9 @@ class RankMethCalls ats_t where
     rankMethCalls :: Int -> ats_t -> (ats_t, [Id] {- local defs to rank -})
 
 instance RankMethCalls AExpr where
-    rankMethCalls ver expr@(AMethCall { ameth_id = name, ae_args = args }) =
+    rankMethCalls ver expr@(AMethCall { ameth_id = name, ame_args = args }) =
         let (ranked_args, defs_to_rewrite) = rankMethCalls ver args
-        in  (expr { ameth_id = rankId ver name, ae_args = ranked_args  },
+        in  (expr { ameth_id = rankId ver name, ame_args = ranked_args },
              defs_to_rewrite)
     rankMethCalls ver expr@(AMethValue { ameth_id = name }) =
         (expr { ameth_id = rankId ver name }, [])
@@ -177,16 +177,25 @@ instance RankMethCalls ARule where
              defs_to_rewrite)
 
 instance RankMethCalls AAction where
-    rankMethCalls ver act@(ACall { acall_methid = meth, aact_args = args }) =
-        let (ranked_args, defs_to_rewrite) = rankMethCalls ver args
-        in  (act { acall_methid = rankId ver meth, aact_args = ranked_args },
-             defs_to_rewrite)
-    rankMethCalls ver act@(AFCall { aact_args = args }) =
-        let (ranked_args, defs_to_rewrite) = rankMethCalls ver args
-        in  (act { aact_args = ranked_args }, defs_to_rewrite)
-    rankMethCalls ver act@(ATaskAction { aact_args = args }) =
-        let (ranked_args, defs_to_rewrite) = rankMethCalls ver args
-        in  (act { aact_args = ranked_args }, defs_to_rewrite)
+    rankMethCalls ver act@(ACall { acall_methid = meth,
+                                   aact_cond = c,
+                                   acall_args = args }) =
+        let (ranked_cond, defs_c) = rankMethCalls ver c
+            (ranked_args, defs_args) = rankMethCalls ver args
+        in  (act { acall_methid = rankId ver meth,
+                   aact_cond = ranked_cond,
+                   acall_args = ranked_args },
+             defs_c `union` defs_args)
+    rankMethCalls ver act@(AFCall { aact_cond = c, aact_args = args }) =
+        let (ranked_c, defs_c)       = rankMethCalls ver c
+            (ranked_args, defs_args) = rankMethCalls ver args
+        in  (act { aact_cond = ranked_c, aact_args = ranked_args },
+             defs_c `union` defs_args)
+    rankMethCalls ver act@(ATaskAction { aact_cond = c, aact_args = args }) =
+        let (ranked_c, defs_c)       = rankMethCalls ver c
+            (ranked_args, defs_args) = rankMethCalls ver args
+        in  (act { aact_cond = ranked_c, aact_args = ranked_args },
+             defs_c `union` defs_args)
 
 instance (RankMethCalls elt_t) => RankMethCalls [elt_t] where
     rankMethCalls ver elts =

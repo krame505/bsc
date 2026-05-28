@@ -202,7 +202,7 @@ getAActionDefs :: DefMap -> M.Map AId (AType, AExpr) -> [AAction] ->
                   M.Map AId (AType, AExpr)
 getAActionDefs def_map known [] = known
 getAActionDefs def_map known (act:acts) =
-  let known' = getAExprDefs def_map known (aact_args act)
+  let known' = getAExprDefs def_map known (aActionArgs act)
   in  getAActionDefs def_map known' acts
 
 -- Accumulate AIds used by an expression and its sub-expressions.
@@ -212,7 +212,7 @@ getAExprDefs _ known [] = known
 getAExprDefs def_map known ((APrim _ _ _ args):es) =
   getAExprDefs def_map known (args ++ es)
 getAExprDefs def_map known ((AMethCall _ _ _ args):es) =
-  getAExprDefs def_map known (args ++ es)
+  getAExprDefs def_map known (concat args ++ es)
 getAExprDefs def_map known ((ANoInlineFunCall _ _ _ args):es) =
   getAExprDefs def_map known (args ++ es)
 getAExprDefs def_map known ((AFunCall _ _ _ _ args):es) =
@@ -319,7 +319,7 @@ tsortActionsAndDefs mmap defmap uses acts =
         -- function to create order edges
         --    m1 `isBefore` m2 == True
         --       when (m1 SB m2) is in the VModInfo for the submodule
-        isBefore (ACall obj1 meth1 _) (ACall obj2 meth2 _) =
+        isBefore (ACall obj1 meth1 _ _) (ACall obj2 meth2 _ _) =
             -- do they act on the same object?
             if (obj1 /= obj2)
             then False
@@ -360,7 +360,7 @@ tsortActionsAndDefs mmap defmap uses acts =
         -- Action / Value method call edges
 
         -- like isBefore, but for Action vs Value method
-        isVMethSB v_obj v_meth (ACall a_obj a_meth _) =
+        isVMethSB v_obj v_meth (ACall a_obj a_meth _ _) =
             -- do they act on the same object?
             if (v_obj /= a_obj)
             then False
@@ -368,7 +368,7 @@ tsortActionsAndDefs mmap defmap uses acts =
                  in  (unQualId v_meth, unQualId a_meth) `S.member` mset
         isVMethSB _ _ _ = False
 
-        isAMethSB v_obj v_meth (ACall a_obj a_meth _) =
+        isAMethSB v_obj v_meth (ACall a_obj a_meth _ _) =
             -- do they act on the same object?
             if (v_obj /= a_obj)
             then False
@@ -406,7 +406,7 @@ tsortActionsAndDefs mmap defmap uses acts =
                            not (null (aMethValues e)) &&
                            not (null (aTaskValues e))
 
-        bad_acts = concatMap (filter isBadActionArg . aact_args) acts
+        bad_acts = concatMap (filter isBadActionArg . aActionArgs) acts
 
         -- ----------
         -- put it together into one graph
@@ -469,7 +469,7 @@ mkAVMethEdges :: [ADef] -> [(Integer, AAction)] ->
 mkAVMethEdges ds method_calls =
     let
         -- check whether an AMethValue is from a particular action
-        isMethValueOf v_obj v_meth (ACall a_obj a_meth _) =
+        isMethValueOf v_obj v_meth (ACall a_obj a_meth _ _) =
             (v_obj == a_obj) && (v_meth == a_meth)
         isMethValueOf _ _ _ = False
 
@@ -566,9 +566,10 @@ instance PPrint AStmt where
   pPrint d p (AStmtDef def) =
       pparen (p > 0) (text "AStmtDef" <+> pPrint d 1 def)
   pPrint d p (AStmtAction cset act) =
+      -- AAction now stores the condition in its own field, so this just
+      -- swaps in the recomputed condition for printing.
       let c = getCondExpr cset
-          as = aact_args act
-          act' = act { aact_args = (c:as) }
+          act' = act { aact_cond = c }
       in  pparen (p > 0) (text "AStmtAction" <+> pPrint d 1 act')
   pPrint d p (AStmtIf cset tblk fblk) =
       pparen (p > 0)
@@ -754,9 +755,10 @@ mergeStmts defmap stmts0 =
         makeStmt :: Either ADef AAction -> AStmt
         makeStmt (Left d) = AStmtDef d
         makeStmt (Right a) =
-            case (aact_args a) of
-              (c:as) -> AStmtAction (getAndTerms c) (a { aact_args = as })
-              _ -> internalError ("makeStmt: aact_args: " ++ ppReadable a)
+            -- the condition lives in its own field across all AAction
+            -- variants, so just pull it out and leave the action otherwise
+            -- untouched
+            AStmtAction (getAndTerms (aact_cond a)) a
     in
         reverseStmts $ foldl addStmt [] $ map makeStmt stmts0
 
@@ -972,22 +974,21 @@ updateAVInstTypes avi = do
 
 updateAActionTypes :: AAction -> UTM AAction
 -- method condition is Bool type, arguments and return values are Bit type
-updateAActionTypes (ACall obj meth (c:as)) = do
+updateAActionTypes (ACall obj meth c args) = do
   c' <- updateAExprTypes_Bool c
-  as' <- mapM updateAExprTypes_Bits as
-  return (ACall obj meth (c':as'))
+  args' <- mapM (mapM updateAExprTypes_Bits) args
+  return (ACall obj meth c' args')
 -- action task/ffunc condition is Bool type, arguments are Bit/Real/String type
-updateAActionTypes (AFCall i f isC (c:as) isAssumpCheck) = do
+updateAActionTypes (AFCall i f isC c as isAssumpCheck) = do
   c' <- updateAExprTypes_Bool c
   as' <- mapM updateAExprTypes_BitsRealOrString as
-  return (AFCall i f isC (c':as') isAssumpCheck)
+  return (AFCall i f isC c' as' isAssumpCheck)
 -- actionvalue task/ffunc condition is Bool type,
 -- arguments and return value are Bit/Real/String type
-updateAActionTypes (ATaskAction i f isC k (c:as) tmp ret_t b) = do
+updateAActionTypes (ATaskAction i f isC k c as tmp ret_t b) = do
   c' <- updateAExprTypes_Bool c
   as' <- mapM updateAExprTypes_BitsRealOrString as
-  return (ATaskAction i f isC k (c':as') tmp ret_t b)
-updateAActionTypes a = internalError ("updateAActionTypes: " ++ ppReadable a)
+  return (ATaskAction i f isC k c' as' tmp ret_t b)
 
 updateAExprTypes :: Maybe AType -> AExpr -> UTM AExpr
 updateAExprTypes (Just exp_ty) (ASInt i t@(ATBit width) lit)
@@ -1029,10 +1030,10 @@ updateAExprTypes mty (APrim i t p args) = updateAPrimTypes mty p i t args
 
 -- method arguments and return values are Bit type,
 -- except RDY methods which return Bool
-updateAExprTypes _ (AMethCall t obj meth as) = do
-  as' <- mapM updateAExprTypes_Bits as
+updateAExprTypes _ (AMethCall t obj meth args) = do
+  args' <- mapM (mapM updateAExprTypes_Bits) args
   let t' = if (isRdyId meth) then mkATBool else t
-  return (AMethCall t' obj meth as')
+  return (AMethCall t' obj meth args')
 
 -- method return values are Bit type
 updateAExprTypes _ e@(AMethValue t obj meth) = return e

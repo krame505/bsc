@@ -135,7 +135,7 @@ simMakeCBlocks flags sim_system =
                    , let m_name = aif_name m
                    , let m_rules = aIfaceRules m
                    , let sub_actions = concatMap arule_actions m_rules
-                   , let sub_names = [ (o,m) | (ACall o m _) <- sub_actions ]
+                   , let sub_names = [ (o,m) | (ACall o m _ _) <- sub_actions ]
                    ]
       getCalls :: String -> AMethodId -> [(AId,AMethodId)]
       getCalls pkg_name mid =
@@ -152,7 +152,7 @@ simMakeCBlocks flags sim_system =
           Nothing      -> []
       actionCalls :: SimPackage -> ARule -> [AId]
       actionCalls root r =
-        let actions = [ (o,m) | (ACall o m _) <- arule_actions r ]
+        let actions = [ (o,m) | (ACall o m _ _) <- arule_actions r ]
             locals  = [ setIdQualString m (getIdString o) | (o,m) <- actions ]
             subs    = [ map (addToQual (getIdString o)) (getAllCalls root (o,m))
                       | (o,m) <- actions
@@ -196,7 +196,7 @@ simMakeCBlocks flags sim_system =
 getIds :: DefMap -> IdSet -> [AAction] -> IdSet
 getIds def_map known [] = known
 getIds def_map known (act:acts) =
-  let known' = getExprIds False def_map known (aact_args act)
+  let known' = getExprIds False def_map known (aActionArgs act)
   in getIds def_map known' acts
 
 -- Accumulate AIds used by an expression and its sub-expressions.
@@ -207,7 +207,7 @@ getExprIds _ _ known [] = known
 getExprIds in_sched def_map known ((APrim _ _ _ args):es) =
   getExprIds in_sched def_map known (args ++ es)
 getExprIds in_sched def_map known ((AMethCall _ _ _ args):es) =
-  getExprIds in_sched def_map known (args ++ es)
+  getExprIds in_sched def_map known (concat args ++ es)
 getExprIds in_sched def_map known ((ATuple _ elems):es) =
   getExprIds in_sched def_map known (elems ++ es)
 getExprIds in_sched def_map known ((ATupleSel _ e _):es) =
@@ -1221,7 +1221,7 @@ mkActionMethodExecStmts top_ifc top_vmeth_set top_ameth_set inst_map full_dmap
       method = headOrErr ("method not in interface: " ++ (ppReadable mid))
                          [ m | m <- top_ifc, aif_name m == mid ]
       args = [ ASPort t (i `inlineIdFrom` top_blk_name)
-             | (i,t) <- aif_inputs method ]
+             | (i,t) <- aIfaceArgs method ]
       cond_stmt = SFSCond (ASDef (ATBit 1) wf)
                           [SFSMethodCall blk_id mid args]
                           []
@@ -1342,7 +1342,7 @@ tsortActionsAndDefs modId rId mmap ds acts reset_ids =
         -- function to create order edges
         --    m1 `isBefore` m2 == True
         --       when (m1 SB m2) is in the VModInfo for the submodule
-        isBefore (ACall obj1 meth1 _) (ACall obj2 meth2 _) =
+        isBefore (ACall obj1 meth1 _ _) (ACall obj2 meth2 _ _) =
             -- do they act on the same object?
             if (obj1 /= obj2)
             then False
@@ -1383,7 +1383,7 @@ tsortActionsAndDefs modId rId mmap ds acts reset_ids =
         -- Action / Value method call edges
 
         -- like isBefore, but for Action vs Value method
-        isVMethSB v_obj v_meth (ACall a_obj a_meth _) =
+        isVMethSB v_obj v_meth (ACall a_obj a_meth _ _) =
             -- do they act on the same object?
             if (v_obj /= a_obj)
             then False
@@ -1391,7 +1391,7 @@ tsortActionsAndDefs modId rId mmap ds acts reset_ids =
                  in  (unQualId v_meth, unQualId a_meth) `S.member` mset
         isVMethSB _ _ _ = False
 
-        isAMethSB v_obj v_meth (ACall a_obj a_meth _) =
+        isAMethSB v_obj v_meth (ACall a_obj a_meth _ _) =
             -- do they act on the same object?
             if (v_obj /= a_obj)
             then False
@@ -1461,7 +1461,8 @@ tsortActionsAndDefs modId rId mmap ds acts reset_ids =
         substAV (ATuple ts es) = ATuple ts (map substAV es)
         substAV (ATupleSel t e i) = ATupleSel t (substAV e) i
         substAV (APrim i t o es) = (APrim i t o (map substAV es))
-        substAV (AMethCall t o m es) = (AMethCall t o m (map substAV es))
+        substAV (AMethCall t o m args) =
+            AMethCall t o m (map (map substAV) args)
         substAV (AFunCall t o f isC es) = (AFunCall t o f isC (map substAV es))
         substAV e = e
 
@@ -1483,7 +1484,7 @@ tsortActionsAndDefs modId rId mmap ds acts reset_ids =
         convertNode (Left d) = Just [mkDefAssign d]
         convertNode (Right (False,acts)) = Just (map cvt_action acts)
         convertNode (Right (True,acts))  = Just (addRstCond (map cvt_action acts))
-        cvt_action a@(ACall obj meth _) =
+        cvt_action a@(ACall obj meth _ _) =
             case (M.lookup (obj,meth) av_meth_set) of
               Just ty -> SFSAssignAction False (mkAVMethTmpId obj meth) a ty
               Nothing -> SFSAction a
@@ -1554,7 +1555,7 @@ mkAVMethEdges :: [ADef] -> [(Integer, AAction)] ->
 mkAVMethEdges ds method_calls =
     let
         -- check whether an AMethValue is from a particular action
-        isMethValueOf v_obj v_meth (ACall a_obj a_meth _) =
+        isMethValueOf v_obj v_meth (ACall a_obj a_meth _ _) =
             (v_obj == a_obj) && (v_meth == a_meth)
         isMethValueOf _ _ _ = False
 
@@ -1635,8 +1636,8 @@ substGateReferences smap stmts =
         -- otherwise, follow exprs
         substInAExpr e@(APrim { ae_args = es }) =
             e { ae_args = map substInAExpr es }
-        substInAExpr e@(AMethCall { ae_args = es }) =
-            e { ae_args = map substInAExpr es }
+        substInAExpr e@(AMethCall { ame_args = args }) =
+            e { ame_args = map (map substInAExpr) args }
         substInAExpr e@(ATuple { ae_elems = es }) =
             e { ae_elems = map substInAExpr es }
         substInAExpr e@(ATupleSel { ae_exp = e1 }) =

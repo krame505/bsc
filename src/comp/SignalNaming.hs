@@ -60,12 +60,12 @@ signalNameFromAExpr' (expr@APrim { aprim_prim = prim })
                   connectWith "_" (map signalNameFromAExpr' (ae_args expr))
 -- omit "_read" on register reads
 signalNameFromAExpr' (expr@AMethCall { })
-    | ameth_id expr == idPreludeRead && null (ae_args expr) =
+    | ameth_id expr == idPreludeRead && all null (ame_args expr) =
         ppString (ae_objid expr)
 signalNameFromAExpr' (expr@AMethCall { }) =
     ppString (ae_objid expr) ++ "_" ++
     ppString (unQualId (ameth_id expr)) ++ "_" ++
-    connectWith "_" (map signalNameFromAExpr' (ae_args expr))
+    connectWith "_" (map signalNameFromAExpr' (concat (ame_args expr)))
 signalNameFromAExpr' (expr@AMethValue { }) =
     ppString (ae_objid expr) ++ "_" ++ ppString (unQualId (ameth_id expr))
 signalNameFromAExpr' (expr@ATuple { }) =

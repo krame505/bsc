@@ -891,7 +891,8 @@ aSchedule_step1 errh flags prefix pps amod = do
         , not (no_arg_valmethod use)
         , let doms = rule_domains (rs1 ++ rs2)
         ]
-      no_arg_valmethod (UUExpr (AMethCall {ae_args = []}) _) = True
+      no_arg_valmethod (UUExpr (AMethCall {ame_args = args}) _) =
+          all null args
       no_arg_valmethod _ = False
       add_doms (d1,u1) (d2,u2) = (nub (d1 ++ d2), nub (u1 ++ u2))
       method_domains = M.unionsWith add_doms method_domain_maps
@@ -1861,14 +1862,15 @@ warnAndRecordArbitraryEarliness
                       -- not an Action method
                       (Nothing, Nothing) -> False
                       -- has no arguments
-                      (Just ((ACall _ _ (c:es)) : _), Just _) | null es
-                          -> False
+                      (Just ((ACall _ _ _ args) : _), Just _)
+                          | all null args -> False
                       -- otherwise, test whether the arguments can differ
                       -- during simultaneous calls
-                      (Just [ACall _ _ (c1:es1)], Just [ACall _ _ (c2:es2)])
+                      (Just [ACall _ _ _ args1],
+                       Just [ACall _ _ _ args2])
                           -> -- if there is only one call, check whether the
                              -- args differ (the conditions don't matter)
-                             es1 /= es2
+                             args1 /= args2
                       (Just uus1, Just uus2)
                           -> -- The optimum test is whether the args differ
                              -- between uses with overlapping conditions,
@@ -2720,30 +2722,28 @@ extractMethodArgEdges scConflictMap0 ds ifs =
       findACondUses rs =
           let getCond = headOrErr "findACondUses: getCond"
               findActionPortUses :: AAction -> S.Set AId
-              findActionPortUses = findExprPortUses . getCond . aact_args
+              findActionPortUses = findExprPortUses . getCond . aActionArgs
               findRulePortUses :: ARule -> S.Set AId
               findRulePortUses = S.unions . map findActionPortUses . arule_actions
           in  S.unions $ map findRulePortUses rs
 
       -- Given an interface field, determine if a conflict edge is needed
-      findAIFaceUses (AIActionValue { aif_name = mid,
-                                      aif_value = d,
-                                      aif_body = rs,
-                                      aif_inputs = as }) =
+      findAIFaceUses iface@(AIActionValue { aif_name = mid,
+                                            aif_value = d,
+                                            aif_body = rs }) =
           -- If the edge already exists, don't bother
           if G.member (mid, mid) scConflictMap0
           then S.empty
-          else let argset = S.fromList (map fst as)
+          else let argset = S.fromList (map fst (aIfaceArgs iface))
                    condset = findACondUses rs
                    valset = findAVValueUses d
                in  S.intersection argset (S.union condset valset)
-      findAIFaceUses (AIAction { aif_name = mid,
-                                 aif_body = rs,
-                                 aif_inputs = as }) =
+      findAIFaceUses iface@(AIAction { aif_name = mid,
+                                       aif_body = rs }) =
           -- If the edge already exists, don't bother
           if G.member (mid, mid) scConflictMap0
           then S.empty
-          else let argset = S.fromList (map fst as)
+          else let argset = S.fromList (map fst (aIfaceArgs iface))
                    condset = findACondUses rs
                in  S.intersection argset condset
       findAIFaceUses _ = S.empty
@@ -4323,24 +4323,31 @@ verifySafeRuleActions flags userDefs rulePCConflictUseMap dtstate = do
               | isTrue c  = (False, Nothing)
               | show_all  = (False, Just $ ppe c)
               | otherwise = (True, Just $ text "...")
-          mkArgs es
-              | null es   = (False, empty)
-              | show_all  = (False, commaSep (map ppe es))
+          -- Render method arguments preserving the source-argument grouping:
+          -- a SplitPorts argument that decomposes to multiple hardware ports
+          -- prints as a parenthesized tuple, a normal single-port argument
+          -- prints bare, and a zero-port argument prints as `()`.
+          ppArgGroup group = case group of
+              [e] -> ppe e
+              _   -> text "(" <> commaSep (map ppe group) <> text ")"
+          mkArgs argGroups
+              | all null argGroups = (False, empty)
+              | show_all  = (False, commaSep (map ppArgGroup argGroups))
               | otherwise = (True, text "...")
           -- (method, hasCond, args, moreInfo)
           getUseInfo :: UniqueUse -> (String, Maybe Doc, Doc, Bool)
-          getUseInfo u@(UUExpr (AMethCall _ i m es) _) =
+          getUseInfo u@(UUExpr (AMethCall _ i m args) _) =
               let meth = getIdBaseString i ++ "." ++ getIdBaseString m
                   (moreCondInfo, cond) = mkCondInfo (extractCondition u)
-                  (moreArgInfo, args) = mkArgs es
-              in  (meth, cond, args, moreCondInfo || moreArgInfo)
+                  (moreArgInfo, argsDoc) = mkArgs args
+              in  (meth, cond, argsDoc, moreCondInfo || moreArgInfo)
           getUseInfo (UUExpr e _) =
               internalError ("getUseInfo: e = " ++ ppReadable e)
-          getUseInfo (UUAction (ACall i m (c:es))) =
+          getUseInfo (UUAction (ACall i m c args)) =
               let meth = getIdBaseString i ++ "." ++ getIdBaseString m
                   (moreCondInfo, cond) = mkCondInfo c
-                  (moreArgInfo, args) = mkArgs es
-              in  (meth, cond, args, moreCondInfo || moreArgInfo)
+                  (moreArgInfo, argsDoc) = mkArgs args
+              in  (meth, cond, argsDoc, moreCondInfo || moreArgInfo)
           getUseInfo (UUAction a) =
               internalError ("getUseInfo: a = " ++ ppReadable a)
           -- construct the error
@@ -5264,7 +5271,7 @@ mkMEAssump (aids, bids) = -- trace("ME: " ++ (ppReadable aids) ++ " " ++ (ppRead
         str = showErrorList [(getPosition aids, EMutuallyExclusiveRulesFire (ppReadable aids) (ppReadable bids))]
 
 errAction :: String -> AAction
-errAction msg = AFCall idErrorTask "$error" False [aTrue, ASStr defaultAId ty msg] True
+errAction msg = AFCall idErrorTask "$error" False aTrue [ASStr defaultAId ty msg] True
   where ty = ATString (Just (genericLength msg))
 
 getNextRule :: ARuleId -> (M.Map ARuleId (Maybe ClockDomain)) -> [ARuleId] -> (Maybe ARuleId)

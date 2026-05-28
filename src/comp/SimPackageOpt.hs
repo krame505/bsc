@@ -230,7 +230,8 @@ optimizeConcats pkg =
                        _   -> APrim pid pty PrimConcat args''
        -- recurse for other
        optConcat (APrim i t o as) = APrim i t o (map optConcat as)
-       optConcat (AMethCall t o m as) = AMethCall t o m (map optConcat as)
+       optConcat (AMethCall t o m args) =
+           AMethCall t o m (map (map optConcat) args)
        -- XXX There is maybe an opportunity to optimize tuple construction here,
        -- since that basically turns into a concat as well.
        optConcat (ATuple t as) = ATuple t (map optConcat as)
@@ -322,7 +323,7 @@ convertASAny errh flags apkg = do
         do args' <- mapM cvtASAnyExpr args
            return $ APrim aid ty op args'
       cvtASAnyExpr (AMethCall ty aid mid args) =
-        do args' <- mapM cvtASAnyExpr args
+        do args' <- mapM (mapM cvtASAnyExpr) args
            return $ AMethCall ty aid mid args'
       cvtASAnyExpr (ATuple ty elems) =
         do elems' <- mapM cvtASAnyExpr elems

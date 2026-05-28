@@ -1069,7 +1069,7 @@ aExprToCExpr _ p@(APrim _ _ PrimStringConcat args) = argCount (==2) args $
 aExprToCExpr _ p@(APrim _ _ _ _) =
   internalError ("unhandled primitive: " ++ (show p))
 aExprToCExpr _ (AMethCall _ id mid args) =
-  do arg_list <- mapM (aExprToCExpr noRet) args
+  do arg_list <- mapM (aExprToCExpr noRet) (concat args)
      return $ (aInstMethIdToC id mid) `cCall` arg_list
 aExprToCExpr ret e@(ATuple _ exprs) =
   wideConcatPrim ret (aSize e) exprs
@@ -1278,27 +1278,22 @@ simFnStmtToCStmt (SFSOutputReset rstId expr) =
 -- for embedding in a larger CC statement
 aActionToCFunCall :: (Maybe (Bool,AId)) -> AAction
                      -> State ConvState (ReturnStyle, CCExpr, CCExpr)
-aActionToCFunCall _ c@(ACall id mth_id aargs) =
-  do cargs <- mapM (aExprToCExpr noRet) aargs
-     let (cond, arg_list) =
-           case cargs of
-             (x:xs) -> (x, xs)
-             _ -> internalError ("aActionToCFunCall: missing cond in ACall args")
+aActionToCFunCall _ c@(ACall id mth_id cond_e args) =
+  do cond <- aExprToCExpr noRet cond_e
+     arg_list <- mapM (aExprToCExpr noRet) (concat args)
      let call = (aInstMethIdToC id mth_id) `cCall` arg_list
      return (Direct, cond, call)
 aActionToCFunCall Nothing act@(AFCall {}) =
   do ff_map <- gets function_map
-     let c = headOrErr "action has no condition" (aact_args act)
-         (_,name,arg_list) = mkCallAction ff_map Nothing act
-     cond <- aExprToCExpr noRet c
+     let (_,name,arg_list) = mkCallAction ff_map Nothing act
+     cond <- aExprToCExpr noRet (aact_cond act)
      args <- convertArgList arg_list
      let call = (var name) `cCall` args
      return (None, cond, call)
 aActionToCFunCall ret act@(ATaskAction {}) =
   do ff_map <- gets function_map
-     let c = headOrErr "action has no condition" (aact_args act)
-         (ret_style,name,arg_list) = mkCallAction ff_map ret act
-     cond <- aExprToCExpr noRet c
+     let (ret_style,name,arg_list) = mkCallAction ff_map ret act
+     cond <- aExprToCExpr noRet (aact_cond act)
      args <- convertArgList arg_list
      let call = (var name) `cCall` args
          ret' = case ret_style of

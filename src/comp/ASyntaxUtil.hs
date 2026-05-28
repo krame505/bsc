@@ -81,7 +81,7 @@ instance AVars AExpr where
 
 
 instance AVars AAction where
-    aVars aa = concatMap aVars (aact_args aa)
+    aVars aa = concatMap aVars (aActionArgs aa)
 
 
 instance AVars AForeignCall where
@@ -117,7 +117,7 @@ instance AVars AVInst where
 -- find AMethValue uses in an AExpr
 aMethValues :: AExpr -> [(AId, AId, AType)]
 aMethValues e@(APrim {}) = concatMap aMethValues (ae_args e)
-aMethValues e@(AMethCall {}) = concatMap aMethValues (ae_args e)
+aMethValues e@(AMethCall {}) = concatMap aMethValues (concat (ame_args e))
 aMethValues (AMethValue ty obj meth) = [(obj,meth,ty)]
 aMethValues (ATuple _ es) = concatMap aMethValues es
 aMethValues (ATupleSel _ e _) = aMethValues e
@@ -139,7 +139,8 @@ aMethValues (AMGate {}) = []
 -- find AMethCall uses in an AExpr (ignore references to AV values)
 aMethCalls :: AExpr -> [(AId, AId)]
 aMethCalls e@(APrim {}) = concatMap aMethCalls (ae_args e)
-aMethCalls (AMethCall _ obj meth es) = ((obj,meth) : concatMap aMethCalls es)
+aMethCalls (AMethCall _ obj meth args) =
+    ((obj,meth) : concatMap aMethCalls (concat args))
 aMethCalls (AMethValue _ obj meth) = []
 aMethCalls (ATuple _ es) = concatMap aMethCalls es
 aMethCalls (ATupleSel _ e _) = aMethCalls e
@@ -161,7 +162,7 @@ aMethCalls (AMGate {}) = []
 -- find ATaskValue uses in an AExpr
 aTaskValues :: AExpr -> [(AId, Integer, AType)]
 aTaskValues e@(APrim {}) = concatMap aTaskValues (ae_args e)
-aTaskValues e@(AMethCall {}) = concatMap aTaskValues (ae_args e)
+aTaskValues e@(AMethCall {}) = concatMap aTaskValues (concat (ame_args e))
 aTaskValues (AMethValue {}) = []
 aTaskValues (ATuple _ es) = concatMap aTaskValues es
 aTaskValues (ATupleSel _ e _) = aTaskValues e
@@ -187,7 +188,8 @@ exprForeignCalls e@(AFunCall {})  =
   then e : concatMap exprForeignCalls (ae_args e)
   else (concatMap exprForeignCalls (ae_args e))
 exprForeignCalls e@(APrim {})     = concatMap exprForeignCalls (ae_args e)
-exprForeignCalls e@(AMethCall {}) = concatMap exprForeignCalls (ae_args e)
+exprForeignCalls e@(AMethCall {}) =
+    concatMap exprForeignCalls (concat (ame_args e))
 exprForeignCalls (ATuple _ es) = concatMap exprForeignCalls es
 exprForeignCalls (ATupleSel _ e _) = exprForeignCalls e
 exprForeignCalls e@(ANoInlineFunCall {}) =
@@ -205,7 +207,7 @@ actionForeignCalls a@(ATaskAction {}) =
   then Left a : map Right (concatMap exprForeignCalls (aact_args a))
   else map Right (concatMap exprForeignCalls (aact_args a))
 actionForeignCalls a@(ACall {})  =
-  map Right (concatMap exprForeignCalls (aact_args a))
+  map Right (concatMap exprForeignCalls (aActionArgs a))
 
 getForeignCallNames :: APackage -> [String]
 getForeignCallNames apkg =
@@ -285,26 +287,32 @@ instance (AExprs b) => AExprs [b] where
     findAExprs f l = concatMap (findAExprs f) l
 
 instance AExprs AAction where
-    mapAExprs f (ACall id mid es) =
-        (ACall id mid (mapAExprs f es))
-    mapAExprs f (AFCall id fun isC es isA) =
-        (AFCall id fun isC (mapAExprs f es) isA)
-    mapAExprs f (ATaskAction id fun isC n es tid tty isA) =
-        (ATaskAction id fun isC n (mapAExprs f es) tid tty isA)
+    mapAExprs f (ACall id mid c args) =
+        ACall id mid (mapAExprs f c) (mapAExprs f args)
+    mapAExprs f (AFCall id fun isC c es isA) =
+        AFCall id fun isC (mapAExprs f c) (mapAExprs f es) isA
+    mapAExprs f (ATaskAction id fun isC n c es tid tty isA) =
+        ATaskAction id fun isC n (mapAExprs f c) (mapAExprs f es) tid tty isA
     -- monadic
-    mapMAExprs f (ACall id mid es) =
-        do es' <- mapMAExprs f es
-           return (ACall id mid es')
-    mapMAExprs f (AFCall id fun isC es isA) =
-        do es' <- mapMAExprs f es
-           return (AFCall id fun isC es' isA)
-    mapMAExprs f (ATaskAction id fun isC n es tid tty isA) =
-        do es' <- mapMAExprs f es
-           return (ATaskAction id fun isC n es' tid tty isA)
+    mapMAExprs f (ACall id mid c args) =
+        do c' <- mapMAExprs f c
+           args' <- mapMAExprs f args
+           return (ACall id mid c' args')
+    mapMAExprs f (AFCall id fun isC c es isA) =
+        do c' <- mapMAExprs f c
+           es' <- mapMAExprs f es
+           return (AFCall id fun isC c' es' isA)
+    mapMAExprs f (ATaskAction id fun isC n c es tid tty isA) =
+        do c' <- mapMAExprs f c
+           es' <- mapMAExprs f es
+           return (ATaskAction id fun isC n c' es' tid tty isA)
     -- find
-    findAExprs f (ACall id mid es) = findAExprs f es
-    findAExprs f (AFCall id fun isC es isA) = findAExprs f es
-    findAExprs f (ATaskAction id fun isC n es tid tty isA) = findAExprs f es
+    findAExprs f (ACall _ _ c args) =
+        findAExprs f c ++ findAExprs f args
+    findAExprs f (AFCall _ _ _ c es _) =
+        findAExprs f c ++ findAExprs f es
+    findAExprs f (ATaskAction _ _ _ _ c es _ _ _) =
+        findAExprs f c ++ findAExprs f es
 
 instance AExprs ADef where
     mapAExprs f (ADef id ty e p) = (ADef id ty (mapAExprs f e) p)
@@ -485,7 +493,7 @@ exprMap f e@(APrim i t o args) =
   let e' = APrim i t o (map (exprMap f) args)
   in fromMaybe e' (f e)
 exprMap f e@(AMethCall t i m args) =
-  let e' = AMethCall t i m (map (exprMap f) args)
+  let e' = AMethCall t i m (map (map (exprMap f)) args)
   in fromMaybe e' (f e)
 exprMap f e@(ATuple t args) =
   let e' = ATuple t (map (exprMap f) args)
@@ -518,7 +526,7 @@ exprMapM f e@(AMethCall t i m args) = do
   me <- f e
   case me of
     Just e' -> return e'
-    Nothing -> do args' <- mapM (exprMapM f) args
+    Nothing -> do args' <- mapM (mapM (exprMapM f)) args
                   return $ AMethCall t i m args'
 exprMapM f e@(ATuple t elems) = do
   me <- f e
@@ -556,7 +564,7 @@ exprFold f v e@(APrim i t o args) =
   let v' = foldr (flip (exprFold f)) v args
   in f e v'
 exprFold f v e@(AMethCall t i m args) =
-  let v' = foldr (flip (exprFold f)) v args
+  let v' = foldr (flip (exprFold f)) v (concat args)
   in f e v'
 exprFold f v e@(ATuple t elems) =
   let v' = foldr (flip (exprFold f)) v elems
@@ -671,14 +679,19 @@ aIdFnToAExprFn _ expr = expr -- identity function for everything without AIds
 
 -- lift an AId mapping function to an AAction mapping function
 aIdFnToAActionFn :: (AId -> AId) -> (AAction -> AAction)
-aIdFnToAActionFn fn (ACall aid mid args) =
-    ACall (fn aid) mid (mapAExprs (aIdFnToAExprFn fn) args)
-aIdFnToAActionFn fn (AFCall aid fun isC args isA) =
-    AFCall (fn aid) fun isC (mapAExprs (aIdFnToAExprFn fn) args) isA
-aIdFnToAActionFn fn (ATaskAction aid fun isC cookie args temp ty isA) =
-    let args' = mapAExprs (aIdFnToAExprFn fn) args
+aIdFnToAActionFn fn (ACall aid mid c args) =
+    ACall (fn aid) mid
+          (aIdFnToAExprFn fn c)
+          (mapAExprs (aIdFnToAExprFn fn) args)
+aIdFnToAActionFn fn (AFCall aid fun isC c args isA) =
+    AFCall (fn aid) fun isC
+           (aIdFnToAExprFn fn c)
+           (mapAExprs (aIdFnToAExprFn fn) args) isA
+aIdFnToAActionFn fn (ATaskAction aid fun isC cookie c args temp ty isA) =
+    let c'    = aIdFnToAExprFn fn c
+        args' = mapAExprs (aIdFnToAExprFn fn) args
         temp' = (liftM fn) temp
-    in ATaskAction (fn aid) fun isC cookie args' temp' ty isA
+    in ATaskAction (fn aid) fun isC cookie c' args' temp' ty isA
 
 -- ---------------
 

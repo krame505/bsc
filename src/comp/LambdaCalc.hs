@@ -56,13 +56,14 @@ convAPackageToLambdaCalc errh flags apkg0 | (apkg_is_wrapped apkg0) =
         -- there should be one value method, and its constant RDY
         fn_defs =
           case ifcs of
-            [AIDef methId args _ p (ADef _ ret_t ret_e _) _ _,
+            [iface@(AIDef methId _ _ p (ADef _ ret_t ret_e _) _ _),
              AIDef rdyId _ _ _ (ADef _ _ rdy_e _) _ _]
              | (isRdyId rdyId) && (isTrue rdy_e) ->
               -- this is very similar to convAIFace for AIDef,
               -- except that the function doesn't take a state argument
               -- and has a different name
               let
+                  args = aIfaceArgs iface
                   rt = convAType ret_t
 
                   argset = S.fromList (map fst args)
@@ -747,8 +748,9 @@ convAIFace :: DefMap -> InstMap -> MethodOrderMap ->
               Id -> AIFace -> [SDefn]
 
 convAIFace defmap instmap mmap modId
-           (AIDef mId args _ p (ADef _ ret_t ret_e _) _ _) =
+           iface@(AIDef mId _ _ p (ADef _ ret_t ret_e _) _ _) =
   let
+      args = aIfaceArgs iface
       mod_ty = modType modId []
       rt = convAType ret_t
 
@@ -770,8 +772,9 @@ convAIFace defmap instmap mmap modId
            body]
 
 convAIFace defmap instmap mmap modId
-           (AIAction args _ p mId rs _) =
+           iface@(AIAction _ _ p mId rs _) =
   let
+      args = aIfaceArgs iface
       mod_ty = modType modId []
 
       -- arguments are Bit type
@@ -788,8 +791,9 @@ convAIFace defmap instmap mmap modId
            body]
 
 convAIFace defmap instmap mmap modId
-           (AIActionValue args _ p mId rs (ADef _ def_t def_e _) _) =
+           iface@(AIActionValue _ _ p mId rs (ADef _ def_t def_e _) _) =
   let
+      args = aIfaceArgs iface
       mod_ty = modType modId []
       -- return value is Bit type
       ret_ty = convAType def_t
@@ -992,7 +996,7 @@ convStmt _ _ (AStmtDef (ADef i t e _)) = do
   e_expr <- convAExpr e
   return [(defId i, convAType t, e_expr)]
 
-convStmt modId avmap (AStmtAction cset (ACall obj meth as)) = do
+convStmt modId avmap (AStmtAction cset (ACall obj meth _ args)) = do
   let c = getCondExpr cset
 
   let mod_type = modType modId []
@@ -1004,8 +1008,8 @@ convStmt modId avmap (AStmtAction cset (ACall obj meth as)) = do
 
   -- convert the condition
   c_expr <- convAExpr c
-  -- convert the arguments
-  a_exprs <- mapM convAExpr as
+  -- convert the arguments (flatten per-arg port groups)
+  a_exprs <- mapM convAExpr (concat args)
 
   let
       -- the kind of module that this instance is
@@ -1072,12 +1076,12 @@ convStmt modId avmap (AStmtAction cset (ACall obj meth as)) = do
 
   return $ (act_def:guard_def:state_def:av_defs)
 
-convStmt _ _ (AStmtAction cset (AFCall i f isC as isAssumpCheck)) = do
+convStmt _ _ (AStmtAction cset (AFCall i f isC _ as isAssumpCheck)) = do
   -- the effect is outside our scope, and there is no return value,
   -- so do nothing
   return []
 
-convStmt _ _ (AStmtAction cset (ATaskAction i f isC k as tmp t b)) = do
+convStmt _ _ (AStmtAction cset (ATaskAction i f isC k _ as tmp t b)) = do
   -- the effect is outside our scope, but there is a return value,
   -- so assign it to an unknown value
   case tmp of
@@ -1178,14 +1182,14 @@ convAExpr (ASAny t Nothing) = let st = convAType t
 
 convAExpr (APrim _ t p args) = convAPrim p t args
 
-convAExpr (AMethCall _ obj meth as) = do
+convAExpr (AMethCall _ obj meth args) = do
   modId <- gets curModId
   state_expr <- gets curState
   instmap <- gets instMap
   let (mod, _, _) = lookupMod instmap obj
       mname = methId mod meth
       modState = SSelect state_expr (instFieldId modId obj)
-  a_exprs <- mapM convAExpr as
+  a_exprs <- mapM convAExpr (concat args)
   return $ SApply (SVar mname) (a_exprs ++ [modState])
 
 convAExpr e@(AMethValue t obj meth) =

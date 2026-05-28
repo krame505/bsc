@@ -111,16 +111,15 @@ chkCond :: AType -> Bool
 chkCond = isBit1
 
 chkAAction :: AAction -> Bool
-chkAAction aa@(ACall i m (c:es)) =
+chkAAction aa@(ACall i m c args) =
     tracePP "chkAAction ACall" aa $
-        all (isBit . chkAExpr) es && chkCond (chkAExpr c)
-chkAAction afc@(AFCall { aact_objid = i, aact_args = (c:es) }) =
+        all (isBit . chkAExpr) (concat args) && chkCond (chkAExpr c)
+chkAAction afc@(AFCall { aact_cond = c, aact_args = es }) =
     tracePP "chkAAction AFCall" afc $
         chkCond (chkAExpr c) && all (isForeignArg . chkAExpr) es
-chkAAction ata@(ATaskAction { aact_args = (c:es) }) =
+chkAAction ata@(ATaskAction { aact_cond = c, aact_args = es }) =
     tracePP "chkAAction ATaskAction" ata $
         chkCond (chkAExpr c) && all (isForeignArg . chkAExpr) es
-chkAAction _ = False
 
 chkAForeignBlock :: AForeignBlock -> Bool
 chkAForeignBlock (clks, fcalls) = all chkAForeignCall fcalls
@@ -261,8 +260,8 @@ chkAExpr e@(APrim _ t op es) =
                 then t
                 else internalError ("chkAExpr: other " ++ ppReadable (e, t, map chkAExpr es))
 
-chkAExpr e@(AMethCall t _ _ es) =
-        if all (isBit . chkAExpr) es
+chkAExpr e@(AMethCall t _ _ args) =
+        if all (isBit . chkAExpr) (concat args)
                 then t
                 else internalError ("chkAExpr: methcall " ++ ppReadable e)
 chkAExpr e@(AFunCall { ae_type = t, ae_args = es }) =
@@ -419,7 +418,8 @@ checkUses ds is ps es = concatMap (checkUse ds is ps) es
 
 checkUse :: S.Set AId -> S.Set AId -> S.Set AId -> AExpr -> [AId]
 checkUse ds is ps (APrim _ _ _ es)     = checkUses ds is ps es
-checkUse ds is ps (AMethCall _ i m es) = checkUses ds is ps es  -- XXX check i and m ?
+checkUse ds is ps (AMethCall _ i m args) =
+    checkUses ds is ps (concat args)  -- XXX check i and m ?
 checkUse ds is ps (AMethValue _ i m)   = [] -- XXX check i and m ?
 checkUse ds is ps (ATuple _ es)        = checkUses ds is ps es
 checkUse ds is ps (ATupleSel _ e _)    = checkUse ds is ps e

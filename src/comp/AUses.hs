@@ -176,7 +176,7 @@ getUUPos (UUExpr (AMethCall _ i _ _) _) = getIdPosition i
 getUUPos (UUExpr _ _) = noPosition -- XXX internal error? get a real position?
 
 extractCondition :: UniqueUse -> AExpr
-extractCondition (UUAction act) | (c:_) <- aact_args act = c
+extractCondition (UUAction act) | (c:_) <- aActionArgs act = c
 extractCondition (UUAction act) = internalError("AUses - action without condition: "
                                                  ++ ppReadable act)
 extractCondition (UUExpr _ uc) = useCondToAExpr uc
@@ -577,9 +577,13 @@ cseWithArgs e = do
   case (M.lookup e cseMap) of
     Just (i, t) -> return (ASDef t i)
     Nothing -> do
-      let args = ae_args e
-      args' <- mapM cse args
-      let e' = e { ae_args = args' }
+      e' <- case e of
+              AMethCall {} -> do
+                args' <- mapM (mapM cse) (ame_args e)
+                return (e { ame_args = args' })
+              _ -> do
+                args' <- mapM cse (ae_args e)
+                return (e { ae_args = args' })
       cseMap <- getCseMap
       case (M.lookup e' cseMap) of
         Just (i, t) -> return (ASDef t i)
@@ -779,15 +783,16 @@ rUses (Rule _ _ preds reads writes) = do
   return (RuleUses ps rs ws)
 
 aUses :: AAction -> UCM (ExprUses, ActionUses)
-aUses a@(ACall i mi (c:es)) = do
+aUses a@(ACall i mi c args) = do
     cond_uses <- eDomain c
     dm <- getDefMap
-    arg_uses  <- liftM (map (addUseCond dm c)) $ mapM eDomain es
+    arg_uses  <- liftM (map (addUseCond dm c)) $
+                 mapM eDomain (concat args)
     expr_uses <- mergeExprUsesM (cond_uses : arg_uses)
     let action_uses = singleMethodActionUse i (unQualId mi) a
     return (expr_uses, action_uses)
 
-aUses a@(AFCall { aact_objid = i, aact_args = (c:es) }) = do
+aUses a@(AFCall { aact_objid = i, aact_cond = c, aact_args = es }) = do
     cond_uses <- eDomain c
     dm <- getDefMap
     arg_uses  <- liftM (map (addUseCond dm c)) $ mapM eDomain es
@@ -795,7 +800,7 @@ aUses a@(AFCall { aact_objid = i, aact_args = (c:es) }) = do
     let action_uses = singleFFuncActionUse i a
     return (expr_uses, action_uses)
 
-aUses a@(ATaskAction { aact_objid = i, aact_args = (c:es) }) = do
+aUses a@(ATaskAction { aact_objid = i, aact_cond = c, aact_args = es }) = do
     cond_uses <- eDomain c
     dm <- getDefMap
     arg_uses  <- liftM (map (addUseCond dm c)) $ mapM eDomain es
@@ -842,9 +847,9 @@ eDomain (APrim _ _ PrimArrayDynSelect [arr_e, idx_e]) = do
 eDomain (APrim { ae_args = es }) =
     -- should primitives have resource constraints?
     mapM eDomain es >>= mergeExprUsesM
-eDomain e@(AMethCall _ i mi es) = do
+eDomain e@(AMethCall _ i mi args) = do
     let this_use = singleMethodExprUse i (unQualId mi) e ucTrue
-    es_uses <- mapM eDomain es
+    es_uses <- mapM eDomain (concat args)
     mergeExprUsesM (this_use : es_uses)
 eDomain (ATuple _ es) = mapM eDomain es >>= mergeExprUsesM
 eDomain (ATupleSel _ e _) = eDomain e

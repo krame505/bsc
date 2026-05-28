@@ -367,12 +367,12 @@ aState' flags pps schedule_info apkg = do
             in  (c':es)
         addWF rid es = internalError("addWF: " ++ ppReadable (rid, es))
 
-        cvtForeign rid resets (AFCall id f isC es _) =
-            AForeignCall id (cvtName isC f) (addWF rid es) [] resets
-        cvtForeign rid resets a@(ATaskAction id f isC _ es Nothing _ _) =
-            AForeignCall id (cvtName isC f) (addWF rid es) [] resets
-        cvtForeign rid resets  (ATaskAction id f isC _ es (Just aid) ty _) =
-            AForeignCall id (cvtName isC f) (addWF rid es) [aid] resets
+        cvtForeign rid resets (AFCall id f isC c es _) =
+            AForeignCall id (cvtName isC f) (addWF rid (c:es)) [] resets
+        cvtForeign rid resets a@(ATaskAction id f isC _ c es Nothing _ _) =
+            AForeignCall id (cvtName isC f) (addWF rid (c:es)) [] resets
+        cvtForeign rid resets  (ATaskAction id f isC _ c es (Just aid) ty _) =
+            AForeignCall id (cvtName isC f) (addWF rid (c:es)) [aid] resets
         cvtForeign rid resets a@(ACall { }) =
             internalError("AState.cvtForeign - not foreign:" ++ ppReadable a)
 
@@ -677,9 +677,11 @@ genModVars vs omMultMap = allmvars
                 -- and a boolean if it is the enable part (of an action meth)
                 --
                 (meth_part, portType, isEnable) <-
-                    -- argument triples
-                    [ (MethodArg n, argType, True) -- EWC mark at true for input
-                          | (n, argType) <- zip [1..] argTypes ] ++
+                    -- argument triples — one per (argN, portM) input port,
+                    -- preserving the source-language grouping of argTypes
+                    [ (MethodArg argN portM, argType, True)
+                          | (argN, typeGroup) <- zip [1..] argTypes
+                          , (portM, argType) <- zip [1..] typeGroup ] ++
                     -- enable triple
                     (case (en_type) of
                          Nothing -> []
@@ -771,7 +773,7 @@ mkSIClockTuple (clk:gates, _) = (clk, gates)
 mkSIClockTuple x = internalError ("aState mkClockIds: " ++ ppReadable x)
 
 mkSIMethodTuple :: AIFace -> [ASPMethodInfo]
-mkSIMethodTuple (AIDef name args _ pred _ vfi _) =
+mkSIMethodTuple iface@(AIDef name _ _ pred _ vfi _) =
    let  (res, rdy, _) = extractNames vfi
    in
     -- assume that method name is the return value Id
@@ -780,10 +782,10 @@ mkSIMethodTuple (AIDef name args _ pred _ vfi _) =
                    aspm_mrdyid     = Just rdy,
                    aspm_menableid  = Nothing,
                    aspm_resultids  = res,
-                   aspm_inputs     = map fst args,
+                   aspm_inputs     = map fst (aIfaceArgs iface),
                    aspm_assocrules = [] }
    ]
-mkSIMethodTuple (AIAction args _ pred name rs vfi) =
+mkSIMethodTuple iface@(AIAction _ _ pred name rs vfi) =
    let  (_, rdy, ena) = extractNames vfi
    in
    [ASPMethodInfo{ aspm_name       = name,
@@ -791,10 +793,10 @@ mkSIMethodTuple (AIAction args _ pred name rs vfi) =
                    aspm_mrdyid     = Just rdy,
                    aspm_menableid  = Just ena,
                    aspm_resultids  = [],
-                   aspm_inputs     = map fst args,
+                   aspm_inputs     = map fst (aIfaceArgs iface),
                    aspm_assocrules = map aRuleName rs }
    ]
-mkSIMethodTuple (AIActionValue args _ pred name rs _ vfi) =
+mkSIMethodTuple iface@(AIActionValue _ _ pred name rs _ vfi) =
    let  (res, rdy, ena) = extractNames vfi
    in
    [ASPMethodInfo{ aspm_name       = name,
@@ -802,7 +804,7 @@ mkSIMethodTuple (AIActionValue args _ pred name rs _ vfi) =
                    aspm_mrdyid     = Just rdy,
                    aspm_menableid  = Just ena,
                    aspm_resultids  = res,
-                   aspm_inputs     = map fst args,
+                   aspm_inputs     = map fst (aIfaceArgs iface),
                    aspm_assocrules = map aRuleName rs }
    ]
 mkSIMethodTuple (AIClock {}) = []
@@ -933,11 +935,15 @@ mkBlob mMap omMultMap (method@(MethodId obj met), usedPorts) =
       -- (For actions, the first argument is the condition, so remove it)
       exp :: UniqueUse -> AExpr
       exp (UUExpr e _) = e
-      exp (UUAction (ACall o m es)) = AMethCall aTAction o m es
-      exp (UUAction (AFCall i f isC es isA)) = AFunCall aTAction i f isC es
+      exp (UUAction (ACall o m c args)) =
+          -- Pack the condition back as the leading port so the resulting
+          -- AMethCall structurally matches the original ACall layout.
+          AMethCall aTAction o m ([c] : args)
+      exp (UUAction (AFCall i f isC c es isA)) =
+          AFunCall aTAction i f isC (c:es)
       -- XXX think this is just used for expression muxing
-      exp (UUAction (ATaskAction i f isC n es tid tty isA)) =
-          AFunCall aTAction i f isC es
+      exp (UUAction (ATaskAction i f isC n c es tid tty isA)) =
+          AFunCall aTAction i f isC (c:es)
 
       -- ---------------
       -- Make the MethodBlob
@@ -1009,11 +1015,12 @@ mkBlob mMap omMultMap (method@(MethodId obj met), usedPorts) =
 --  * an expression substitution to replace old expressions with uses
 --    of the new definitions
 
-mkEmuxss :: ([AExpr] -> [AExpr]) -> ([AExpr] -> AExpr) ->
+mkEmuxss :: ([AExpr] -> [AExpr]) -> ([[AExpr]] -> [[AExpr]]) ->
+            ([AExpr] -> AExpr) ->
             ExclusiveRulesDB -> [AId] -> OrderMap -> MethBlob ->
             ([ADef], [ADef], [ADef], AExprSubst)
-mkEmuxss tl cnd rdb value_method_ids om (((o, m), f), emrss) =
-    let genfunct = mkEmuxs tl cnd rdb value_method_ids om o m
+mkEmuxss tl tlG cnd rdb value_method_ids om (((o, m), f), emrss) =
+    let genfunct = mkEmuxs tl tlG cnd rdb value_method_ids om o m
         (sel_dss, val_dss, out_dss, sss) = unzip4 (zipWith genfunct (map (toMaybe f) [0..]) emrss)
     in  (concat sel_dss, concat val_dss, concat out_dss, concat sss)
 
@@ -1022,36 +1029,49 @@ mkEmuxss tl cnd rdb value_method_ids om (((o, m), f), emrss) =
 -- XXX conditional def/use analysis.
 mkEmuxssExpr :: ExclusiveRulesDB -> [AId] -> OrderMap -> MethBlob
              -> ([ADef], [ADef], [ADef], AExprSubst)
-mkEmuxssExpr = mkEmuxss id (const aTrue)
+mkEmuxssExpr = mkEmuxss id id (const aTrue)
 
 mkEmuxssAction :: ExclusiveRulesDB -> [AId] -> OrderMap -> MethBlob
                -> ([ADef], [ADef], [ADef], AExprSubst)
-mkEmuxssAction = mkEmuxss tail head
+mkEmuxssAction = mkEmuxss tail tail head
 
 -- ---------------
 
 -- This function produces a set of muxes per port
 -- (that is, per copy of the method on a single state instance)
 
-mkEmuxs :: ([AExpr] -> [AExpr]) -> ([AExpr] -> AExpr) ->
+mkEmuxs :: ([AExpr] -> [AExpr]) -> ([[AExpr]] -> [[AExpr]]) ->
+           ([AExpr] -> AExpr) ->
            ExclusiveRulesDB -> [AId] -> OrderMap ->
            AId -> AId -> Maybe Integer -> MethPortBlob ->
            ([ADef], [ADef], [ADef], AExprSubst)
-mkEmuxs tl cnd rdb value_method_ids om o m ino emrs =
+mkEmuxs tl tlG cnd rdb value_method_ids om o m ino emrs =
     let
         -- Break each MethPortBlob into a list of the expressions for
         -- each argument, and then transpose the entire structure to
         -- make a list of, for each argument, a list of the different
         -- expressions used by the different uses for that argument
         arg_blobs = transpose [ [ (e, (cnd es), rs) | e <- tl es ] |
-                                    (AMethCall _ _ _ es, rs) <- emrs]
+                                    (AMethCall _ _ _ args, rs) <- emrs,
+                                    let es = concat args ]
 
-        -- Call mkEmux once for each argument of the method, giving it
-        -- the list of different expressions for that argument, to
-        -- separately mux the values for each argument.
-        -- The result is new defs for the connections to the mux.
-        def_tuples = zipWith (mkEmux rdb value_method_ids om ino o m)
-                         [1..] arg_blobs
+        -- (argN, portM) coordinates for each input-port position; derived
+        -- from the first call's args shape (all calls share the same
+        -- method, hence the same shape).  `tlG` strips the synthetic cond
+        -- group when called from the action variant.
+        portCoords = case emrs of
+            ((AMethCall _ _ _ args, _) : _) ->
+                [ (argN, portM)
+                | (argN, group) <- zip [1..] (tlG args)
+                , (portM, _)    <- zip [1..] group ]
+            _ -> []
+
+        -- Call mkEmux once for each input port of the method, giving it
+        -- the list of different expressions for that port, to separately
+        -- mux the values for each.  Result: new defs for the mux wiring.
+        def_tuples = zipWith (\(argN, portM) ->
+                                  mkEmux rdb value_method_ids om ino o m argN portM)
+                         portCoords arg_blobs
         (sel_defs, val_defs, out_defs) = concatUnzip3 def_tuples
 
         mkPortSubsts (e, _) =
@@ -1090,12 +1110,12 @@ mkEmuxs tl cnd rdb value_method_ids om o m ino emrs =
 --  * The definition for the output of the mux
 --
 mkEmux :: ExclusiveRulesDB -> [AId] -> OrderMap ->
-          Maybe Integer -> AId -> AId -> Integer ->
+          Maybe Integer -> AId -> AId -> Integer -> Integer ->
           [(AExpr, AExpr, Maybe [ARuleId])] -> ([ADef], [ADef], [ADef])
-mkEmux exclusive_rules_db value_method_ids om ino o m ano [(e, _, _)] =
+mkEmux exclusive_rules_db value_method_ids om ino o m argN portM [(e, _, _)] =
     -- Only one input to the mux
-    ([], [], [ ADef (argId ino o m ano) (aType e) e [] ])
-mkEmux exclusive_rules_db value_method_ids om ino o m ano ers@((e,_,_):_) =
+    ([], [], [ ADef (argId ino o m argN portM) (aType e) e [] ])
+mkEmux exclusive_rules_db value_method_ids om ino o m argN portM ers@((e,_,_):_) =
     -- Multiple inputs
     let
         -- ---------------
@@ -1246,7 +1266,7 @@ mkEmux exclusive_rules_db value_method_ids om ino o m ano ers@((e,_,_):_) =
         sel_defs = concatMap mkSel ers'
 
         -- The Id of this argument
-        i = argId ino o m ano
+        i = argId ino o m argN portM
 
         -- The new def for the result of the mux
         -- default_pair is an explicit default conditions for the mux ASAny
@@ -1266,7 +1286,7 @@ mkEmux exclusive_rules_db value_method_ids om ino o m ano ers@((e,_,_):_) =
                             ppReadable (o, m, map fst3 ers))
         else (sel_defs, val_defs, [out_def])
 
-mkEmux _ _ _ _ _ _ _ _ = internalError "mkEMux"
+mkEmux _ _ _ _ _ _ _ _ _ = internalError "mkEMux"
 
 -- create a default expresson for a mux from the conditions
 mkDefaultPair :: AType -> [AExpr] -> [AExpr]
@@ -1286,9 +1306,11 @@ mkEnables o m ino emrs =
         let mi = mkMethId o m ino MethodEnable
             (dss, ess) = unzip (zipWith mkE emrs [1..])
             mkE :: (AExpr, Maybe [ARuleId]) -> Integer -> ([ADef], [AExpr])
-            mkE (AMethCall _ _ _ (ASInt _ _ (IntLit _ _ 1) : _), Just is) _ =
+            mkE (AMethCall _ _ _ args, Just is) _
+              | (ASInt _ _ (IntLit _ _ 1) : _) <- concat args =
                 ([], [ aWillFireId i | i <- is ])
-            mkE (AMethCall _ _ _ (c : _), Just is) k =
+            mkE (AMethCall _ _ _ args, Just is) k
+              | (c : _) <- concat args =
               let ior  = mkIdPre (concatFString [mkFString astOrPref,
                                                  mkNumFString k]) mi
                   iand = mkIdPre (concatFString [mkFString astAndPref,
@@ -1344,8 +1366,8 @@ mkIdGuards _ _ _ exp = internalError $ "mkIdGuards: " ++ ppReadable exp
 -- Helper functions
 --
 
-argId :: Maybe Integer -> Id -> Id -> Integer -> Id
-argId ino o m ano = mkMethId o m ino (MethodArg ano)
+argId :: Maybe Integer -> Id -> Id -> Integer -> Integer -> Id
+argId ino o m argN portM = mkMethId o m ino (MethodArg argN portM)
 
 aWillFireId :: AId -> AExpr
 aWillFireId i = ASDef aTBool (mkIdWillFire i)

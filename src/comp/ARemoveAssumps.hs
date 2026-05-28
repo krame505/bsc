@@ -10,12 +10,10 @@ aRemoveAssumps :: APackage -> APackage
 aRemoveAssumps = mapARules removeAssumpRule
 
 addAssumpPred :: AExpr -> AAction -> AAction
-addAssumpPred p f@(AFCall { aact_args = (c:es) }) = f'
-  where f' = f { aact_args = (c':es) }
-        c' = aAnd p c
-addAssumpPred p t@(ATaskAction { aact_args = (c:es) }) = t'
-  where t' = t { aact_args = (c':es) }
-        c' = aAnd p c
+addAssumpPred p f@(AFCall { aact_cond = c }) =
+    f { aact_cond = aAnd p c }
+addAssumpPred p t@(ATaskAction { aact_cond = c }) =
+    t { aact_cond = aAnd p c }
 -- XXX method calls are not allowed in assumptions
 addAssumpPred _ a = internalError ("ARemoveAssumps.addAssumpPred unexpected: " ++ ppReadable a)
 

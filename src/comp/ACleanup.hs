@@ -6,7 +6,7 @@ import DisjointTest(DisjointTestState, initDisjointTestState,
                     addADefToDisjointTestState, checkDisjointExprWithCtx)
 import Data.Maybe
 import Flags(Flags)
-import Control.Monad(when)
+import Control.Monad(when, zipWithM)
 import Control.Monad.State(StateT, evalStateT, liftIO, get, put)
 import FStringCompat(mkFString)
 import Position(noPosition)
@@ -119,18 +119,19 @@ cleanupActions flags pred as =
       loop merged [] = return (reverse merged)
 
       -- Found an action method
-      loop merged (first@(ACall id methodid (cond:args)):rest) =
+      loop merged (first@(ACall id methodid cond args):rest) =
          -- Internal loop to scan for matching actions that might be ME
-         let loopR :: [AAction] -> [AAction] -> CMonad [AAction]
+         let argShape = map length args
+             loopR :: [AAction] -> [AAction] -> CMonad [AAction]
              loopR scanned [] =
                 return ((reverse merged) ++ [first] ++ (reverse scanned))
 
          -- not necessary - rest has been cleaned already
          -- loopR scanned [] = loop (first:merged) (reverse scanned)
-             loopR scanned (firstR@(ACall id' methodid' (cond':args')):restR)
+             loopR scanned (firstR@(ACall id' methodid' cond' args'):restR)
                                 | (id == id') &&
                                     (methodid == methodid') &&
-                                    ((length args) == (length args')) =
+                                    (argShape == map length args') =
                 do
                    dtState <- getDisjointTestState
                    (isDisjoint,newstate) <-
@@ -142,17 +143,18 @@ cleanupActions flags pred as =
                         newid <- newName
                         addDef (ADef newid aTBool
                                 (APrim newid aTBool PrimBOr [cond, cond']) [])
-                        newargs <-
-                            (mapM (\ (arg, arg') ->
+                        let mergeArg (arg, arg') =
                                 do
                                     argid <- newName
                                     let argtyp = (aType arg)
                                     addDef (ADef argid argtyp
                                         (APrim argid argtyp PrimIf [cond, arg, arg']) [])
-                                    return (ASDef argtyp argid))
-                                         (zip args args'))
-                        let newcall = (ACall id methodid
-                                ((ASDef aTBool newid):newargs))
+                                    return (ASDef argtyp argid)
+                        newArgGroups <-
+                            zipWithM (\g g' -> mapM mergeArg (zip g g'))
+                                     args args'
+                        let newcall = ACall id methodid
+                                            (ASDef aTBool newid) newArgGroups
 
           -- restR is guaranteed merged amongst itself (see below)
           -- so no more work need be done...
