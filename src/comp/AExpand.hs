@@ -5,7 +5,7 @@ module AExpand (
                 expandAPackage
                 ) where
 
-import Data.List(group, sort, nub, genericLength)
+import Data.List(group, sort, nub)
 import qualified Data.Map as M
 import qualified Data.Set as S
 import PFPrint
