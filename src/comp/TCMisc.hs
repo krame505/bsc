@@ -2298,7 +2298,14 @@ propagateFunDeps ps0 =
             -- copy of its closure is renamed to wholly fresh ids
             -- (definitions and references), and is emitted only if a
             -- consult actually uses it (see addSolvedPoolNG).
-            closed pr = all (`elem` bvs) (tv pr)
+            -- Only a FULLY ground predicate is deposited into the
+            -- runTI-wide ground pool: its binding is hoisted to the
+            -- outermost letseq (see TIMonad.popSolvedPool), so it must
+            -- not mention any signature-bound rigid tyvar whose binder
+            -- is nested below that letseq.  A closed-but-rigid predicate
+            -- (tv all in bvs but non-empty) instead falls into o_pairs
+            -- and keeps flowing, re-deriving its dictionary in-scope.
+            closed pr = null (tv pr)
             (c_pairs, o_pairs) = partition (closed . snd) ok_pairs
             -- A CLOSED candidate equal to an existing pool entry is
             -- fully spent evidence: drop it from the flow with an

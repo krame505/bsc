@@ -128,7 +128,18 @@ data TStateRecover = TStateRecover {
   -- whether pool deposits are currently allowed; disabled while
   -- checking qualifiers, whose code is emitted outside the current
   -- group's dictionary letseq (see withoutPoolDeposits)
-  tsPoolDepositsOK :: Bool
+  tsPoolDepositsOK :: Bool,
+  -- nesting depth of open push/popSolvedPool frames within the current
+  -- runTI (runTI is per top-level definition, so this starts at 0).
+  -- The GROUND pool (tsSolvedPool / tsPoolSbs) accumulates for the
+  -- whole runTI and its bindings are emitted only by the outermost
+  -- frame -- the popSolvedPool that returns this to 0.  That frame's
+  -- letseq lexically dominates every definition that can consult a
+  -- ground entry, so hoisting the bindings there guarantees every
+  -- pooled-dictionary reference is in scope (fixes the ISyntaxCheck
+  -- .findT ICE where a dropped ground dict was referenced in a sibling
+  -- definition whose letseq did not scope over the deposit frame's).
+  tsPoolDepth :: Int
 }
 
 type TSSatElement = EPred
@@ -208,7 +219,8 @@ initRecoverState = TStateRecover {
     tsPoolSbs = emptySBs,
     tsPoolSbsNG = emptySBs,
     tsPoolUsedNG = S.empty,
-    tsPoolDepositsOK = True
+    tsPoolDepositsOK = True,
+    tsPoolDepth = 0
   }
 
 data TIResult a = TIResult {
@@ -457,33 +469,50 @@ addPoolUsed i = modify (\ s ->
 -- bindings are emitted by an enclosing group's letseq that scopes
 -- around this group; non-ground entries are hidden from the nested
 -- frame (see tsSolvedPoolNG).
-pushSolvedPool :: TI (([EPred], [EPred]), (SolvedBinds, SolvedBinds, S.Set Id))
+pushSolvedPool :: TI ([EPred], (SolvedBinds, S.Set Id))
 pushSolvedPool = do
-    pool <- gets tsSolvedPool
     pool_ng <- gets tsSolvedPoolNG
-    sbs <- gets tsPoolSbs
     sbs_ng <- gets tsPoolSbsNG
     used <- gets tsPoolUsedNG
-    modify (\ s -> s { tsSolvedPoolNG = [], tsPoolSbs = emptySBs,
-                       tsPoolSbsNG = emptySBs, tsPoolUsedNG = S.empty })
-    return ((pool, pool_ng), (sbs, sbs_ng, used))
+    -- The GROUND pool (tsSolvedPool) and its bindings (tsPoolSbs) are
+    -- deliberately NOT reset here: a ground dictionary is closed
+    -- evidence that may be consulted from any definition in this runTI,
+    -- so both its entry and its binding belong to the outermost frame
+    -- and stay live across every nested frame.  Only the frame-local
+    -- non-ground (alias) state is saved and reset.  Bump the frame depth
+    -- so popSolvedPool can tell the outermost frame from an inner one.
+    modify (\ s -> s { tsSolvedPoolNG = [], tsPoolSbsNG = emptySBs,
+                       tsPoolUsedNG = S.empty,
+                       tsPoolDepth = tsPoolDepth s + 1 })
+    return (pool_ng, (sbs_ng, used))
 
--- Leave a binding-group frame: return this frame's deposited bindings
--- for emission into the group's letseq -- the ground bindings always,
--- the non-ground alias closures only where a consult marked them used
--- -- drop this frame's pool entries, and restore the enclosing frame's
--- state.
-popSolvedPool :: (([EPred], [EPred]), (SolvedBinds, SolvedBinds, S.Set Id))
-              -> TI SolvedBinds
-popSolvedPool ((pool0, pool_ng0), (sbs0, sbs_ng0, used0)) = do
-    frame_sbs <- gets tsPoolSbs
+-- Leave a binding-group frame.  An INNER frame restores only its
+-- frame-local non-ground state and emits just its own used alias
+-- closures; the ground pool and its bindings keep accumulating, and
+-- references to a ground dictionary resolve to the dominating outer
+-- letseq.  The OUTERMOST frame (the pop that returns the depth to 0)
+-- emits the whole runTI's accumulated ground bindings together with its
+-- used alias closures -- that letseq dominates every definition that
+-- could have consulted a ground entry -- and clears the ground pool.
+popSolvedPool :: ([EPred], (SolvedBinds, S.Set Id)) -> TI SolvedBinds
+popSolvedPool (pool_ng0, (sbs_ng0, used0)) = do
+    depth <- gets tsPoolDepth
     frame_sbs_ng <- gets tsPoolSbsNG
     used <- gets tsPoolUsedNG
     let (used_sbs, _) = extractClosures S.empty (S.toList used) frame_sbs_ng
-    modify (\ s -> s { tsSolvedPool = pool0, tsSolvedPoolNG = pool_ng0,
-                       tsPoolSbs = sbs0, tsPoolSbsNG = sbs_ng0,
-                       tsPoolUsedNG = used0 })
-    return (frame_sbs <++ used_sbs)
+    if depth > 1
+      then do
+        modify (\ s -> s { tsSolvedPoolNG = pool_ng0,
+                           tsPoolSbsNG = sbs_ng0, tsPoolUsedNG = used0,
+                           tsPoolDepth = depth - 1 })
+        return used_sbs
+      else do
+        ground_sbs <- gets tsPoolSbs
+        modify (\ s -> s { tsSolvedPool = [], tsPoolSbs = emptySBs,
+                           tsSolvedPoolNG = pool_ng0,
+                           tsPoolSbsNG = sbs_ng0, tsPoolUsedNG = used0,
+                           tsPoolDepth = 0 })
+        return (ground_sbs <++ used_sbs)
 
 -- force a substitution into the pool state (see tiRecoveringFromError:
 -- must be kept in step with the answer value when the substitution is
